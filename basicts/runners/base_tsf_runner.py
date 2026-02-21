@@ -1063,7 +1063,7 @@ class TimeSeriesForecastingInferenceRunner(BaseEpochRunner):
 
             # corresponding datetime (next step)
             dt = start_dt + np.timedelta64(
-                (idx + prediction.shape[0] + 1) * freq, "m"
+                (idx + prediction.shape[0]) * freq, "m"
             )
 
             rows.append((dt, first_pred))
