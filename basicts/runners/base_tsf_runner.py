@@ -10,6 +10,7 @@ import torch
 from easydict import EasyDict
 from easytorch.utils import master_only
 from tqdm import tqdm
+import pandas as pd
 
 from basicts.data.simple_inference_dataset import TimeSeriesInferenceDataset, TimeSeriesFullInferenceDataset
 
