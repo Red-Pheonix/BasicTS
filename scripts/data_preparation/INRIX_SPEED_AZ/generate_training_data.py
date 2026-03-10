@@ -11,6 +11,7 @@ dataset_name = 'INRIX_SPEED_AZ'
 data_file_path = f'datasets/raw_data/{dataset_name}/processed/processed.csv'
 graph_file_path = f'datasets/raw_data/{dataset_name}/processed/adj_mx.pkl'
 weather_file_path = f'datasets/raw_data/{dataset_name}/processed/weather_condition.csv'
+incident_file_path = f'datasets/raw_data/{dataset_name}/processed/incidents.csv'
 output_dir = f'datasets/{dataset_name}'
 target_channel = [0]  # Target traffic flow channel
 add_time_of_day = True  # Add time of day as a feature
@@ -19,6 +20,7 @@ add_day_of_month = False  # Add day of the month as a feature
 add_day_of_year = False  # Add day of the year as a feature
 add_month_of_year = True # Add month of the year as a feature
 add_weather = True  # Add one-hot weather condition features
+add_incidents = True  # Add one-hot incident level features
 steps_per_day = 288  # Number of time steps per day
 frequency = 1440 // steps_per_day # data points every 5 min
 domain = 'traffic speed'
@@ -43,8 +45,9 @@ class WeatherCode(str, Enum):
     THUNDERSTORM = 'Thunderstorm'
 
 WEATHER_CATEGORIES = [code.value for code in WeatherCode]
+INCIDENT_LEVELS = [1, 2, 3, 4]
 
-def build_feature_description(weather_categories=None):
+def build_feature_description(weather_categories=None, incident_levels=None):
     '''Build the feature description list based on enabled features.'''
     description = [domain]
 
@@ -60,6 +63,8 @@ def build_feature_description(weather_categories=None):
         description.append('month of year')
     if add_weather and weather_categories is not None:
         description.extend([f'weather: {category}' for category in weather_categories])
+    if add_incidents and incident_levels is not None:
+        description.extend([f'incident level: {level}' for level in incident_levels])
 
     return description
 
@@ -96,11 +101,35 @@ def load_weather_features(df, num_nodes):
 
     return weather_tiled, WEATHER_CATEGORIES
 
+def load_incident_features(df):
+    '''Load incident levels and one-hot encode them per node.'''
+    incident_df = pd.read_csv(incident_file_path, index_col=0, parse_dates=True)
+
+    if len(incident_df) != len(df):
+        raise ValueError(
+            f'Incident rows ({len(incident_df)}) do not match traffic rows ({len(df)}).'
+        )
+    if set(incident_df.columns) != set(df.columns):
+        raise ValueError('Incident columns do not match traffic segment columns.')
+
+    incident_values = incident_df.to_numpy(dtype=np.int8)
+
+    unknown_levels = sorted(set(np.unique(incident_values)) - {0, *INCIDENT_LEVELS})
+    if unknown_levels:
+        raise ValueError(f'Unknown incident levels found: {unknown_levels}')
+
+    incident_one_hot = np.stack(
+        [(incident_values == level).astype(np.float32) for level in INCIDENT_LEVELS],
+        axis=-1
+    )
+    return incident_one_hot, INCIDENT_LEVELS
+
 def add_temporal_features(data, df):
-    '''Add temporal and weather features to the data.'''
+    '''Add temporal, weather, and incident features to the data.'''
     _, n, _ = data.shape
     feature_list = [data]
     weather_categories = []
+    incident_levels = []
 
     if add_time_of_day:
         time_of_day = (df.index.values - df.index.values.astype('datetime64[D]')) / np.timedelta64(1, 'D')
@@ -134,8 +163,12 @@ def add_temporal_features(data, df):
         weather_tiled, weather_categories = load_weather_features(df, n)
         feature_list.append(weather_tiled)
 
+    if add_incidents:
+        incident_tiled, incident_levels = load_incident_features(df)
+        feature_list.append(incident_tiled)
+
     data_with_features = np.concatenate(feature_list, axis=-1)  # L x N x C
-    return data_with_features, weather_categories
+    return data_with_features, weather_categories, incident_levels
 
 def save_data(data):
     '''Save the preprocessed data to a binary file.'''
@@ -164,9 +197,9 @@ def save_graph():
     shutil.copyfile(graph_file_path, output_graph_path)
     print(f'Adjacency matrix saved to {output_graph_path}')
 
-def save_description(data, df, weather_categories):
+def save_description(data, df, weather_categories, incident_levels):
     '''Save a description of the dataset to a JSON file.'''
-    feature_description = build_feature_description(weather_categories)
+    feature_description = build_feature_description(weather_categories, incident_levels)
     description = {
         'name': dataset_name,
         'domain': domain,
@@ -181,6 +214,7 @@ def save_description(data, df, weather_categories):
         'start_datetime': df.index[0].strftime('%Y-%m-%d %H:%M:%S'),
         'end_datetime': df.index[-1].strftime('%Y-%m-%d %H:%M:%S'),
         'weather_categories': weather_categories,
+        'incident_levels': incident_levels,
         'regular_settings': regular_settings
     }
     description_path = os.path.join(output_dir, 'desc.json')
@@ -194,7 +228,7 @@ def main():
     data, df = load_and_preprocess_data()
 
     # Add temporal features
-    data_with_features, weather_categories = add_temporal_features(data, df)
+    data_with_features, weather_categories, incident_levels = add_temporal_features(data, df)
 
     # Save timestamps for downstream calendar-based datasets
     save_timestamps(df)
@@ -206,7 +240,7 @@ def main():
     save_graph()
 
     # Save dataset description
-    save_description(data_with_features, df, weather_categories)
+    save_description(data_with_features, df, weather_categories, incident_levels)
 
 if __name__ == '__main__':
     main()
