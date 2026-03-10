@@ -7,7 +7,7 @@ from easydict import EasyDict
 sys.path.append(os.path.abspath(__file__ + "/../../.."))
 
 from basicts.metrics import masked_mae, masked_mape, masked_rmse
-from basicts.data import TimeSeriesForecastingDataset
+from basicts.data import TimeSeriesForecastingDataset, CalendarSplitDataset
 from basicts.runners import (
     SimpleTimeSeriesForecastingRunner,
     InferenceTimeSeriesForecastingRunner,
@@ -39,7 +39,7 @@ MODEL_PARAM = {
     "horizon": 12,
     "input_dim": 2,
     "max_diffusion_step": 2,
-    "num_nodes": 238,
+    "num_nodes": 163,
     "num_rnn_layers": 2,
     "output_dim": 1,
     "rnn_units": 64,
@@ -63,13 +63,14 @@ CFG._ = random.randint(-1e6, 1e6)
 CFG.DATASET = EasyDict()
 # Dataset settings
 CFG.DATASET.NAME = DATA_NAME
-CFG.DATASET.TYPE = TimeSeriesForecastingDataset
+CFG.DATASET.TYPE = CalendarSplitDataset
 CFG.DATASET.PARAM = EasyDict(
     {
         "dataset_name": DATA_NAME,
         "train_val_test_ratio": TRAIN_VAL_TEST_RATIO,
         "input_len": INPUT_LEN,
         "output_len": OUTPUT_LEN,
+        "holdout_last_days_of_month": 7,
         # 'mode' is automatically set by the runner
     }
 )
