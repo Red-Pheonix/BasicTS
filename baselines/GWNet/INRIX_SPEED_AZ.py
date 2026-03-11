@@ -6,8 +6,8 @@ from easydict import EasyDict
 sys.path.append(os.path.abspath(__file__ + "/../../.."))
 
 from basicts.metrics import masked_mae, masked_mape, masked_rmse
-from basicts.data import TimeSeriesForecastingDataset
-from basicts.runners import SimpleTimeSeriesForecastingRunner, InferenceTimeSeriesForecastingRunner
+from basicts.data import CalendarSplitDataset
+from basicts.runners import InferenceTimeSeriesForecastingRunner
 from basicts.scaler import ZScoreScaler
 from basicts.utils import get_regular_settings, load_adj
 
@@ -31,13 +31,13 @@ NULL_VAL = regular_settings["NULL_VAL"]  # Null value in the data
 MODEL_ARCH = GraphWaveNet
 adj_mx, _ = load_adj("datasets/" + DATA_NAME + "/adj_mx.pkl", "doubletransition")
 MODEL_PARAM = {
-    "num_nodes": 238,
+    "num_nodes": 163,
     "supports": [torch.tensor(i) for i in adj_mx],
     "dropout": 0.3,
     "gcn_bool": True,
     "addaptadj": True,
     "aptinit": None,
-    "in_dim": 1,
+    "in_dim": 16,
     "out_dim": 12,
     "residual_channels": 32,
     "dilation_channels": 32,
@@ -47,7 +47,7 @@ MODEL_PARAM = {
     "blocks": 4,
     "layers": 2,
 }
-NUM_EPOCHS = 100
+NUM_EPOCHS = 5
 
 ############################## General Configuration ##############################
 CFG = EasyDict()
@@ -61,13 +61,14 @@ CFG.RUNNER = InferenceTimeSeriesForecastingRunner
 CFG.DATASET = EasyDict()
 # Dataset settings
 CFG.DATASET.NAME = DATA_NAME
-CFG.DATASET.TYPE = TimeSeriesForecastingDataset
+CFG.DATASET.TYPE = CalendarSplitDataset
 CFG.DATASET.PARAM = EasyDict(
     {
         "dataset_name": DATA_NAME,
         "train_val_test_ratio": TRAIN_VAL_TEST_RATIO,
         "input_len": INPUT_LEN,
         "output_len": OUTPUT_LEN,
+        "holdout_last_days_of_month": 7,
         # 'mode' is automatically set by the runner
     }
 )
@@ -91,7 +92,7 @@ CFG.MODEL = EasyDict()
 CFG.MODEL.NAME = MODEL_ARCH.__name__
 CFG.MODEL.ARCH = MODEL_ARCH
 CFG.MODEL.PARAM = MODEL_PARAM
-CFG.MODEL.FORWARD_FEATURES = [0]
+CFG.MODEL.FORWARD_FEATURES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 CFG.MODEL.TARGET_FEATURES = [0]
 
 ############################## Metrics Configuration ##############################
@@ -137,13 +138,13 @@ CFG.TRAIN.CLIP_GRAD_PARAM = {"max_norm": 5.0}
 
 ############################## Validation Configuration ##############################
 CFG.VAL = EasyDict()
-CFG.VAL.INTERVAL = 1
+CFG.VAL.INTERVAL = 5
 CFG.VAL.DATA = EasyDict()
 CFG.VAL.DATA.BATCH_SIZE = 64
 
 ############################## Test Configuration ##############################
 CFG.TEST = EasyDict()
-CFG.TEST.INTERVAL = 1
+CFG.TEST.INTERVAL = 5
 CFG.TEST.DATA = EasyDict()
 CFG.TEST.DATA.BATCH_SIZE = 64
 

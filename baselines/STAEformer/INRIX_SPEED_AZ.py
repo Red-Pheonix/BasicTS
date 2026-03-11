@@ -1,6 +1,5 @@
 import os
 import sys
-import torch
 from easydict import EasyDict
 
 sys.path.append(os.path.abspath(__file__ + "/../../.."))
@@ -11,7 +10,7 @@ from basicts.runners import InferenceTimeSeriesForecastingRunner
 from basicts.scaler import ZScoreScaler
 from basicts.utils import get_regular_settings
 
-from .arch import STID
+from .arch import STAEformer
 
 ############################## Hot Parameters ##############################
 # Dataset & Metrics configuration
@@ -28,22 +27,25 @@ NORM_EACH_CHANNEL = regular_settings[
 RESCALE = regular_settings["RESCALE"]  # Whether to rescale the data
 NULL_VAL = regular_settings["NULL_VAL"]  # Null value in the data
 # Model architecture and parameters
-MODEL_ARCH = STID
+MODEL_ARCH = STAEformer
+
 MODEL_PARAM = {
     "num_nodes": 163,
-    "input_len": INPUT_LEN,
+    "in_steps": INPUT_LEN,
+    "out_steps": OUTPUT_LEN,
+    "steps_per_day": 288,
     "input_dim": 16,
-    "embed_dim": 32,
-    "output_len": OUTPUT_LEN,
-    "num_layer": 3,
-    "if_node": True,
-    "node_dim": 32,
-    "if_T_i_D": True,
-    "if_D_i_W": True,
-    "temp_dim_tid": 32,
-    "temp_dim_diw": 32,
-    "time_of_day_size": 288,
-    "day_of_week_size": 7,
+    "output_dim": 1,
+    "input_embedding_dim": 24,
+    "tod_embedding_dim": 24,
+    "dow_embedding_dim": 24,
+    "spatial_embedding_dim": 0,
+    "adaptive_embedding_dim": 80,
+    "feed_forward_dim": 256,
+    "num_heads": 4,
+    "num_layers": 3,
+    "dropout": 0.1,
+    "use_mixed_proj": True,
 }
 NUM_EPOCHS = 100
 
@@ -120,17 +122,19 @@ CFG.TRAIN.LOSS = masked_mae
 CFG.TRAIN.OPTIM = EasyDict()
 CFG.TRAIN.OPTIM.TYPE = "Adam"
 CFG.TRAIN.OPTIM.PARAM = {
-    "lr": 0.002,
-    "weight_decay": 0.0001,
+    "lr": 0.001,
+    "weight_decay": 0.0003,
 }
 # Learning rate scheduler settings
 CFG.TRAIN.LR_SCHEDULER = EasyDict()
 CFG.TRAIN.LR_SCHEDULER.TYPE = "MultiStepLR"
-CFG.TRAIN.LR_SCHEDULER.PARAM = {"milestones": [1, 50, 80], "gamma": 0.5}
-CFG.TRAIN.CLIP_GRAD_PARAM = {"max_norm": 5.0}
+CFG.TRAIN.LR_SCHEDULER.PARAM = {
+    "milestones": [20, 25],
+    "gamma": 0.1,
+}
 # Train data loader settings
 CFG.TRAIN.DATA = EasyDict()
-CFG.TRAIN.DATA.BATCH_SIZE = 64
+CFG.TRAIN.DATA.BATCH_SIZE = 16
 CFG.TRAIN.DATA.SHUFFLE = True
 
 ############################## Validation Configuration ##############################
