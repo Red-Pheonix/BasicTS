@@ -665,6 +665,21 @@ class TimeSeriesForecastingInferenceRunner(BaseEpochRunner):
         self._prediction_memmap = None
         self._target_memmap = None
 
+    def init_inference(self, cfg: Dict, input_data: Union[str, list]) -> None:
+        """Initialize inference components, including meters."""
+
+        if self.need_setup_graph:
+            self.setup_graph(cfg=cfg, train=False)
+            self.need_setup_graph = False
+
+        super().init_inference(cfg, input_data)
+        self.register_epoch_meter('inference/loss', 'inference', '{:.4f}', plt=False)
+        for key in self.metrics:
+            self.register_epoch_meter(f'inference/{key}', 'inference', '{:.4f}', plt=False)
+        for i in self.evaluation_horizons:
+            for key in self.metrics:
+                self.register_epoch_meter(f'inference/{key}@h{i+1}', f'inference @ horizon {i+1}', '{:.4f}', plt=False)
+    
     def build_scaler(self, cfg: Dict):
         """Build scaler.
 
@@ -1050,6 +1065,32 @@ class TimeSeriesForecastingInferenceRunner(BaseEpochRunner):
                 data, epoch=None, iter_num=None, train=False
             )
 
+            loss = self.metric_forward(self.loss, forward_return)
+            weight = self._get_metric_weight(forward_return['target'])
+            self.update_epoch_meter('inference/loss', loss.item(), weight)
+
+            if not self.if_evaluate_on_gpu:
+                pred = forward_return['prediction'].detach().cpu()
+                target = forward_return['target'].detach().cpu()
+            else:
+                pred = forward_return['prediction']
+                target = forward_return['target']
+
+            for i in self.evaluation_horizons:
+                pred_h = pred[:, i, :, :]
+                target_h = target[:, i, :, :]
+                weight_h = self._get_metric_weight(target_h)
+
+                for metric_name, metric_func in self.metrics.items():
+                    if metric_name.lower() == 'mase':
+                        continue
+                    metric_val = self.metric_forward(metric_func, {'prediction': pred_h, 'target': target_h})
+                    self.update_epoch_meter(f'inference/{metric_name}@h{i+1}', metric_val.item(), weight_h)
+
+            for metric_name, metric_func in self.metrics.items():
+                metric_item = self.metric_forward(metric_func, {'prediction': pred, 'target': target})
+                self.update_epoch_meter(f'inference/{metric_name}', metric_item.item(), weight)
+
             prediction = (
                 forward_return["prediction"]
                 .detach()
@@ -1071,6 +1112,8 @@ class TimeSeriesForecastingInferenceRunner(BaseEpochRunner):
             
             pbar.update(1)
 
+        pbar.close()
+
         # save
         if save_result_path:
             # save prediction to save_result_path with csv format
@@ -1087,7 +1130,17 @@ class TimeSeriesForecastingInferenceRunner(BaseEpochRunner):
                 date_format="%Y-%m-%d %H:%M:%S"
             )
 
-        return None, None
+        metrics_results = {
+            'overall': {k: self.meter_pool.get_value(f'inference/{k}') for k in self.metrics.keys()}
+        }
+        for i in self.evaluation_horizons:
+            metrics_results[f'horizon_{i+1}'] = {
+                k: self.meter_pool.get_value(f'inference/{k}@h{i+1}') for k in self.metrics.keys()
+            }
+        with open(os.path.join(self.ckpt_save_dir, 'inference_metrics.json'), 'w') as f:
+            json.dump(metrics_results, f, indent=4)
+
+        return rows, metrics_results
 
     @torch.no_grad()
     @master_only

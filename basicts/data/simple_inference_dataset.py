@@ -1,11 +1,126 @@
 import json
 import logging
+import os
 from typing import List, Tuple, Union
 
 import numpy as np
 import pandas as pd
 
 from .base_dataset import BaseDataset
+
+
+def tile_feature(values: Union[pd.Index, np.ndarray], num_nodes: int) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float32)
+    return np.tile(values, [1, num_nodes, 1]).transpose((2, 1, 0))
+
+
+def get_weather_feature(df: pd.DataFrame, num_nodes: int, description: dict, dataset_name: str) -> np.ndarray:
+    weather_categories = description.get('weather_categories', [])
+    if not weather_categories or not dataset_name:
+        return None
+
+    weather_file_path = f'datasets/raw_data/{dataset_name}/processed/weather_condition.csv'
+    if not os.path.exists(weather_file_path):
+        raise FileNotFoundError(f'Weather file not found: {weather_file_path}')
+
+    weather_df = pd.read_csv(weather_file_path)
+    if 'timestamp' not in weather_df.columns or 'weather_condition' not in weather_df.columns:
+        raise ValueError('Weather file must contain timestamp and weather_condition columns.')
+
+    weather_df['timestamp'] = pd.to_datetime(weather_df['timestamp'], utc=True).dt.tz_localize(None)
+    weather_df = weather_df.drop_duplicates(subset='timestamp', keep='last').set_index('timestamp')
+    weather_df = weather_df.reindex(df.index)
+    weather_df['weather_condition'] = weather_df['weather_condition'].ffill().bfill()
+
+    if weather_df['weather_condition'].isna().any():
+        raise ValueError('Weather data could not be filled after timestamp alignment.')
+
+    weather_codes = pd.Categorical(
+        weather_df['weather_condition'],
+        categories=weather_categories
+    )
+    weather_one_hot = pd.get_dummies(weather_codes, dtype=np.float32).to_numpy()
+    return np.tile(weather_one_hot[:, None, :], (1, num_nodes, 1))
+
+
+def get_incident_feature(
+    df: pd.DataFrame, num_nodes: int, node_columns: Union[pd.Index, None], description: dict, dataset_name: str
+) -> np.ndarray:
+    incident_levels = description.get('incident_levels', [])
+    if not incident_levels or not dataset_name:
+        return None
+
+    incident_file_path = f'datasets/raw_data/{dataset_name}/processed/incidents.csv'
+    if not os.path.exists(incident_file_path):
+        raise FileNotFoundError(f'Incident file not found: {incident_file_path}')
+
+    if node_columns is None or len(node_columns) != num_nodes:
+        raise ValueError('Incident features require node-aligned inference columns.')
+
+    incident_df = pd.read_csv(incident_file_path, index_col=0, parse_dates=True)
+    incident_df.index = pd.to_datetime(incident_df.index, utc=True).tz_localize(None)
+
+    if incident_df.shape[1] != len(node_columns):
+        raise ValueError('Incident columns must exactly match inference node columns.')
+
+    incident_df = incident_df.reindex(df.index).fillna(0)
+    incident_values = incident_df.to_numpy(dtype=np.int8)
+    
+    unknown_levels = sorted(set(np.unique(incident_values)) - {0, *incident_levels})
+    if unknown_levels:
+        raise ValueError(f'Unknown incident levels found: {unknown_levels}')
+
+    return np.stack(
+        [(incident_values == level).astype(np.float32) for level in incident_levels],
+        axis=-1
+    )
+
+
+def _build_features(data: np.ndarray, df: pd.DataFrame, description: dict, dataset_name: str) -> np.ndarray:
+    _, num_nodes, _ = data.shape
+    feature_description = description.get('feature_description', [])
+
+    # Fall back to the original simple temporal layout when description metadata is unavailable.
+    if not feature_description:
+        feature_description = ['value', 'time of day', 'day of week', 'day of month', 'day of year']
+
+    feature_map = {
+        'time of day': tile_feature((df.index.hour * 60 + df.index.minute) / (24 * 60), num_nodes),
+        'day of week': tile_feature(df.index.dayofweek / 7, num_nodes),
+        'day of month': tile_feature((df.index.day - 1) / 31, num_nodes),
+        'day of year': tile_feature((df.index.dayofyear - 1) / 366, num_nodes),
+        'month of year': tile_feature((df.index.month - 1) / 13, num_nodes),
+    }
+    has_weather_features = any(name.startswith('weather: ') for name in feature_description)
+    has_incident_features = any(name.startswith('incident level: ') for name in feature_description)
+
+    weather_feature = (
+        get_weather_feature(df, num_nodes, description, dataset_name)
+        if has_weather_features else None
+    )
+    node_columns = df.columns if len(df.columns) == num_nodes else None
+    incident_feature = (
+        get_incident_feature(df, num_nodes, node_columns, description, dataset_name)
+        if has_incident_features else None
+    )
+
+    feature_list = [data]
+    weather_offset = 0
+    incident_offset = 0
+
+    for feature_name in feature_description[1:]:
+        if feature_name in feature_map:
+            feature_list.append(feature_map[feature_name])
+        elif feature_name.startswith('weather: ') and weather_feature is not None:
+            feature_list.append(weather_feature[..., weather_offset:weather_offset + 1])
+            weather_offset += 1
+        elif feature_name.startswith('incident level: ') and incident_feature is not None:
+            feature_list.append(incident_feature[..., incident_offset:incident_offset + 1])
+            incident_offset += 1
+
+    data_with_features = np.concatenate(feature_list, axis=-1).astype('float32')
+    data_set_shape = description['shape']
+    return data_with_features[..., range(data_set_shape[2])]
 
 
 class TimeSeriesInferenceDataset(BaseDataset):
@@ -334,7 +449,7 @@ class TimeSeriesFullInferenceDataset(BaseDataset):
 
     def _add_temporal_features(self, data, df) -> np.ndarray:
         '''
-        Add time of day and day of week as features to the data.
+        Add temporal and auxiliary features to the data.
 
         Args:
             data (np.ndarray): The data array.
@@ -344,36 +459,7 @@ class TimeSeriesFullInferenceDataset(BaseDataset):
             np.ndarray: The data array with added time of day and day of week features.
         '''
 
-        _, n, _ = data.shape
-        feature_list = [data]
-
-        # numerical time_of_day
-        tod = (df.index.hour*60 + df.index.minute) / (24*60)
-        tod_tiled = np.tile(tod, [1, n, 1]).transpose((2, 1, 0))
-        feature_list.append(tod_tiled)
-
-        # numerical day_of_week
-        dow = df.index.dayofweek / 7
-        dow_tiled = np.tile(dow, [1, n, 1]).transpose((2, 1, 0))
-        feature_list.append(dow_tiled)
-
-        # numerical day_of_month
-        dom = (df.index.day - 1) / 31 # df.index.day starts from 1. We need to minus 1 to make it start from 0.
-        dom_tiled = np.tile(dom, [1, n, 1]).transpose((2, 1, 0))
-        feature_list.append(dom_tiled)
-
-        # numerical day_of_year
-        doy = (df.index.dayofyear - 1) / 366 # df.index.month starts from 1. We need to minus 1 to make it start from 0.
-        doy_tiled = np.tile(doy, [1, n, 1]).transpose((2, 1, 0))
-        feature_list.append(doy_tiled)
-
-        data_with_features = np.concatenate(feature_list, axis=-1).astype('float32')  # L x N x C
-
-        # Remove extra features
-        data_set_shape = self.description['shape']
-        data_with_features = data_with_features[..., range(data_set_shape[2])]
-
-        return data_with_features
+        return _build_features(data, df, self.description, self.dataset_name)
 
     def append_data(self, new_data: np.ndarray) -> None:
         """
@@ -425,14 +511,14 @@ class TimeSeriesFullInferenceDataset(BaseDataset):
             dict: A dictionary containing 'inputs' and 'target', where both are slices of the dataset corresponding to
                   the historical input data and future prediction data, respectively.
         """
-        history_data = self.data[index:index+self.input_len]
+        history_data = self.data[index:index+self.input_len].astype('float32')
 
-        freq = self.description['frequency (minutes)']
-        _, n, _ = history_data.shape
-        future_data = np.zeros((self.output_len, n, 1))
+        # freq = self.description['frequency (minutes)']
+        _, n, feature_num = history_data.shape
+        future_data = self.data[index+self.input_len:index+self.input_len+self.output_len].astype('float32')
 
-        data_with_features, _ = self._gen_datetime_list(future_data, self.last_datetime, freq, self.output_len)
-        return {'inputs': history_data, 'target': data_with_features}
+        # data_with_features, _ = self._gen_datetime_list(future_data, self.last_datetime, freq, self.output_len)
+        return {'inputs': history_data, 'target': future_data}
 
     def __len__(self) -> int:
         """
@@ -442,4 +528,4 @@ class TimeSeriesFullInferenceDataset(BaseDataset):
         Returns:
             int: The number of valid samples that can be drawn from the dataset, based on the configurations of input and output lengths.
         """
-        return self.data.shape[0] - self.input_len
+        return max(0, self.data.shape[0] - self.input_len - self.output_len + 1)
