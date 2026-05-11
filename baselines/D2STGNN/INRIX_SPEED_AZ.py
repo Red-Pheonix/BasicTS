@@ -38,7 +38,7 @@ MODEL_PARAM = {
     "k_t": 3,
     "k_s": 2,
     "gap": 3,
-    "num_nodes": 238,
+    "num_nodes": 163,
     "adjs": [torch.tensor(adj) for adj in adj_mx],
     "num_layers": 5,
     "num_modalities": 2,
@@ -47,7 +47,7 @@ MODEL_PARAM = {
     "time_in_day_size": 288,
     "day_in_week_size": 7,
 }
-NUM_EPOCHS = 5
+NUM_EPOCHS = 100
 
 ############################## General Configuration ##############################
 CFG = EasyDict()
@@ -91,7 +91,7 @@ CFG.MODEL = EasyDict()
 CFG.MODEL.NAME = MODEL_ARCH.__name__
 CFG.MODEL.ARCH = MODEL_ARCH
 CFG.MODEL.PARAM = MODEL_PARAM
-CFG.MODEL.FORWARD_FEATURES = [0]
+CFG.MODEL.FORWARD_FEATURES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 CFG.MODEL.TARGET_FEATURES = [0]
 
 ############################## Metrics Configuration ##############################

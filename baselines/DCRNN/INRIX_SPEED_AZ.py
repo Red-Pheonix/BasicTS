@@ -47,7 +47,7 @@ MODEL_PARAM = {
     "adj_mx": [torch.tensor(i) for i in adj_mx],
     "use_curriculum_learning": True,
 }
-NUM_EPOCHS = 5
+NUM_EPOCHS = 100
 
 ############################## General Configuration ##############################
 CFG = EasyDict()

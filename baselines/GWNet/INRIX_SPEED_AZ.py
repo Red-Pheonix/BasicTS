@@ -6,7 +6,7 @@ from easydict import EasyDict
 sys.path.append(os.path.abspath(__file__ + "/../../.."))
 
 from basicts.metrics import masked_mae, masked_mape, masked_rmse
-from basicts.data import CalendarSplitDataset
+from basicts.data import EventAwareCalendarSplitDataset
 from basicts.runners import InferenceTimeSeriesForecastingRunner
 from basicts.scaler import ZScoreScaler
 from basicts.utils import get_regular_settings, load_adj
@@ -37,7 +37,7 @@ MODEL_PARAM = {
     "gcn_bool": True,
     "addaptadj": True,
     "aptinit": None,
-    "in_dim": 16,
+    "in_dim": 4,
     "out_dim": 12,
     "residual_channels": 32,
     "dilation_channels": 32,
@@ -47,7 +47,7 @@ MODEL_PARAM = {
     "blocks": 4,
     "layers": 2,
 }
-NUM_EPOCHS = 5
+NUM_EPOCHS = 100
 
 ############################## General Configuration ##############################
 CFG = EasyDict()
@@ -61,7 +61,7 @@ CFG.RUNNER = InferenceTimeSeriesForecastingRunner
 CFG.DATASET = EasyDict()
 # Dataset settings
 CFG.DATASET.NAME = DATA_NAME
-CFG.DATASET.TYPE = CalendarSplitDataset
+CFG.DATASET.TYPE = EventAwareCalendarSplitDataset
 CFG.DATASET.PARAM = EasyDict(
     {
         "dataset_name": DATA_NAME,
@@ -69,6 +69,7 @@ CFG.DATASET.PARAM = EasyDict(
         "input_len": INPUT_LEN,
         "output_len": OUTPUT_LEN,
         "holdout_last_days_of_month": 7,
+        "event_buffer_minutes": 120,
         # 'mode' is automatically set by the runner
     }
 )
@@ -92,7 +93,8 @@ CFG.MODEL = EasyDict()
 CFG.MODEL.NAME = MODEL_ARCH.__name__
 CFG.MODEL.ARCH = MODEL_ARCH
 CFG.MODEL.PARAM = MODEL_PARAM
-CFG.MODEL.FORWARD_FEATURES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+# CFG.MODEL.FORWARD_FEATURES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+CFG.MODEL.FORWARD_FEATURES = [0, 1, 2, 3]
 CFG.MODEL.TARGET_FEATURES = [0]
 
 ############################## Metrics Configuration ##############################

@@ -1,7 +1,7 @@
 import inspect
 import json
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -384,3 +384,138 @@ class CalendarSplitDataset(BaseDataset):
             return len(self.sample_starts)
         
         return len(self.data) - self.input_len - self.output_len + 1
+
+
+class EventAwareCalendarSplitDataset(CalendarSplitDataset):
+    """
+    Calendar-split dataset variant that removes event-overlapping training samples
+    using event channels already present in the loaded data.
+    """
+
+    DEFAULT_EVENT_KEYWORDS = ('event', 'incident')
+
+    def __init__(self, dataset_name: str, train_val_test_ratio: List[float], mode: str, input_len: int,
+                output_len: int, timestamp_file: Optional[str] = None,
+                holdout_last_days_of_month: Optional[int] = None,
+                event_buffer_minutes: int = 0,
+                memmap: bool = False,
+                overlap: bool = False, logger: logging.Logger = None) -> None:
+        self.event_feature_indices = None
+        self.event_buffer_minutes = event_buffer_minutes
+        self.event_mask = None
+
+        super().__init__(
+            dataset_name=dataset_name,
+            train_val_test_ratio=train_val_test_ratio,
+            mode=mode,
+            input_len=input_len,
+            output_len=output_len,
+            timestamp_file=timestamp_file,
+            holdout_last_days_of_month=holdout_last_days_of_month,
+            memmap=memmap,
+            overlap=overlap,
+            logger=logger,
+        )
+
+    def _load_data(self) -> np.ndarray:
+        """Load calendar-split data, then filter training windows by events."""
+        seg = super()._load_data()
+
+        if self.mode != 'train':
+            return seg
+
+        self.event_feature_indices = self.resolve_event_feature_indices(seg)
+        self.event_mask = self.build_event_mask_from_data(seg)
+        self.event_mask = self.apply_event_buffer(self.event_mask)
+        self.filter_event_overlapping_samples()
+        return seg
+
+    def resolve_event_feature_indices(self, data: np.ndarray) -> List[int]:
+        """Infer and validate event feature indices against the data feature axis."""
+        num_features = data.shape[-1]
+        feature_description = self.description.get('feature_description', [])
+        event_feature_indices = [
+            idx
+            for idx, name in enumerate(feature_description)
+            if any(keyword in str(name).lower() for keyword in self.DEFAULT_EVENT_KEYWORDS)
+        ]
+
+        if len(event_feature_indices) == 0:
+            raise ValueError(
+                'No event feature indices were inferred from desc.json. '
+                f'Expected feature_description entries containing one of {self.DEFAULT_EVENT_KEYWORDS}.'
+            )
+
+        normalized_indices = []
+        for index in event_feature_indices:
+            if index < 0 or index >= num_features:
+                raise ValueError(
+                    f'Inferred event feature index {index} is out of bounds for {num_features} features.'
+                )
+            normalized_indices.append(index)
+        return normalized_indices
+
+    def build_event_mask_from_data(self, data: np.ndarray) -> np.ndarray:
+        """Create a time-level event mask from event feature channels."""
+        event_values = np.take(data, indices=self.event_feature_indices, axis=-1)
+        event_values = np.nan_to_num(np.asarray(event_values), nan=0.0)
+        if event_values.ndim == 1:
+            return event_values != 0
+        return np.any(event_values != 0, axis=tuple(range(1, event_values.ndim)))
+
+    def apply_event_buffer(self, event_mask: np.ndarray) -> np.ndarray:
+        """Expand event timestamps by event_buffer_minutes on both sides."""
+        if self.event_buffer_minutes <= 0 or not event_mask.any():
+            return event_mask
+
+        step_minutes = self.get_frequency_minutes()
+        buffer_steps = int(np.ceil(self.event_buffer_minutes / step_minutes))
+        if buffer_steps <= 0:
+            return event_mask
+
+        event_counts = np.concatenate(([0], np.cumsum(event_mask.astype(np.int64))))
+        indices = np.arange(len(event_mask), dtype=np.int64)
+        starts = np.clip(indices - buffer_steps, 0, len(event_mask))
+        ends = np.clip(indices + buffer_steps + 1, 0, len(event_mask))
+        return (event_counts[ends] - event_counts[starts]) > 0
+
+    def get_frequency_minutes(self) -> float:
+        """Read timestamp frequency in minutes from the dataset description."""
+        if 'frequency (minutes)' not in self.description:
+            raise ValueError('Dataset description must include "frequency (minutes)" to apply an event buffer.')
+
+        frequency_minutes = float(self.description['frequency (minutes)'])
+        if frequency_minutes <= 0:
+            raise ValueError('Dataset frequency must be positive to apply an event buffer.')
+        return frequency_minutes
+
+    def filter_event_overlapping_samples(self) -> None:
+        """Remove training sample starts whose configured window overlaps an event."""
+        if self.sample_starts is None:
+            minimal_len = self.input_len + self.output_len
+            self.sample_starts = np.arange(max(0, len(self.data) - minimal_len + 1), dtype=np.int64)
+
+        if len(self.sample_starts) == 0:
+            return
+
+        window_len = self.input_len + self.output_len
+        starts = self.sample_starts
+        ends = starts + window_len
+        event_counts = np.concatenate(([0], np.cumsum(self.event_mask.astype(np.int64))))
+        keep_mask = (event_counts[ends] - event_counts[starts]) == 0
+
+        original_len = len(self.sample_starts)
+        self.sample_starts = self.sample_starts[keep_mask]
+        removed = original_len - len(self.sample_starts)
+        if removed > 0:
+            self.log_info(
+                f'Removed {removed} event-overlapping training samples '
+                f'from {self.dataset_name} using event features {self.event_feature_indices}.'
+            )
+
+    def log_info(self, message: str) -> None:
+        """Log with the dataset logger when available."""
+        if self.logger is not None:
+            self.logger.info(message)
+        else:
+            print(message)
